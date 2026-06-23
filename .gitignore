@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.db
+*.xlsx
+*.csv
+*.png
+*.html
+*.zip
+*.zip:Zone.Identifier
+*:Zone.Identifier
+.claude/
