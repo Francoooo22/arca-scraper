@@ -371,6 +371,7 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=HEADLESS,
+            executable_path="/snap/bin/chromium",
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = browser.new_context(
