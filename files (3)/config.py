@@ -15,11 +15,31 @@ load_dotenv()  # Carga .env si existe
 # ──────────────────────────────────────────────
 CUITS = [
     {
-        "cuit": "20416440698",
-        "razon_social": "Franco",
-        "password": "Franco2026",
+        "cuit": "23348079719",
+        "password": "Wolfcris2025",
+        "razon_social": "Cristian De Benedectis",
+        "empresas": [
+            {"cuit": "30716583445", "razon_social": "Wolf Travel S.A."},
+        ],
     },
-    # Agregá más clientes acá...
+    # ── Formato simple (1 empresa sin lista) ──────────────────────────────
+    # {
+    #     "cuit": "20111111111",
+    #     "password": "clave",
+    #     "razon_social": "Mi Empresa SRL",
+    #     "cuit_representacion": "30111111112",  # opcional
+    # },
+    #
+    # ── Formato multi-empresa ────────────────────────────────────────────
+    # {
+    #     "cuit": "20222222222",
+    #     "password": "clave",
+    #     "razon_social": "Dueño",
+    #     "empresas": [
+    #         {"cuit": "30222222223", "razon_social": "Empresa A S.A."},
+    #         {"cuit": "30222222224", "razon_social": "Empresa B S.R.L."},
+    #     ],
+    # },
 ]
 
 # ──────────────────────────────────────────────
@@ -29,10 +49,10 @@ DB_PATH = os.getenv("DB_PATH", "arca_scraper.db")
 
 # Período a scrapear (formato ARCA: dd/mm/yyyy - dd/mm/yyyy)
 PERIODO_DESDE = os.getenv("PERIODO_DESDE", "01/01/2025")
-PERIODO_HASTA = os.getenv("PERIODO_HASTA", "31/05/2025")
+PERIODO_HASTA = os.getenv("PERIODO_HASTA", "31/12/2025")
 
 # Playwright: True = sin ventana (servidor), False = con ventana (debug)
-HEADLESS = os.getenv("HEADLESS", "False").lower() == "true"
+HEADLESS = os.getenv("HEADLESS", "True").lower() == "true"
 
 # Segundos de espera máxima para elementos de ARCA (puede ser lento)
 TIMEOUT_MS = 30_000

@@ -67,6 +67,13 @@ def exportar_excel(output_path: str = None, cuit: str = None, periodo: str = Non
         cuits = cur.fetchall()
     conn.close()
 
+    if not cuits:
+        ws = wb.create_sheet("Sin datos")
+        ws["A1"] = "No hay comprobantes en la base de datos."
+        wb.save(output_path)
+        print(f"[EXPORT] ✓ Excel guardado (sin datos): {output_path}")
+        return output_path
+
     COLOR_HEADER = "1F3864"  # azul oscuro
     COLOR_ALT    = "EEF2F7"  # gris claro para filas alternas
 

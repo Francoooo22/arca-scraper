@@ -18,6 +18,7 @@ Mejoras:
 """
 
 import io
+import os
 import time
 import zipfile
 import functools
@@ -167,20 +168,27 @@ def abrir_mis_comprobantes(context, page):
     return popup
 
 
-def seleccionar_persona(popup, cuit: str):
-    """
-    Si aparece la pantalla 'Elegí una persona para ingresar', selecciona el propio CUIT.
-    """
-    if popup.locator("#idcontribuyente").count() == 0:
-        return  # sin pantalla de selección
+def _detectar_pantalla_personas(popup):
+    """Detecta si estamos en la pantalla de selección de persona."""
+    return (popup.locator("#idcontribuyente").count() > 0
+            or popup.locator("h3:has-text('REPRESENTAR A')").count() > 0
+            or popup.locator('[title="Cambiar persona representada"]').count() > 0)
 
-    print("  [PERSONA] Seleccionando persona...")
+
+def seleccionar_persona(popup, cuit: str, razon_social: str = ""):
+    """
+    Si aparece la pantalla 'Elegí una persona para ingresar' / 'REPRESENTAR A:',
+    selecciona la empresa indicada.
+    """
+    if not _detectar_pantalla_personas(popup):
+        return
+
+    print(f"  [PERSONA] Seleccionando: {razon_social or cuit}...")
     cuit_fmt = _cuit_con_guiones(cuit)
 
-    # Intentar click en el panel con el CUIT formateado (panel propio)
-    panel = popup.locator(f"a.panel:has-text('{cuit_fmt}')").first
-    if panel.count() > 0:
-        panel.click()
+    link = popup.locator(f"a:has-text('{cuit_fmt}')").first
+    if link.count() > 0:
+        link.click()
     else:
         popup.evaluate(
             "document.getElementById('idcontribuyente').value='0';"
@@ -193,7 +201,68 @@ def seleccionar_persona(popup, cuit: str):
     except Exception:
         pass
 
-    print(f"  [PERSONA] ✓ Persona seleccionada. URL: {popup.url}")
+    print(f"  [PERSONA] ✓ Seleccionada. URL: {popup.url}")
+
+
+def cambiar_persona_representada(popup, cuit: str, razon_social: str = ""):
+    """
+    Click en 'Cambiar persona representada' y selecciona otra empresa
+    sin necesidad de reloguear.
+    """
+    print(f"  [SWITCH] Cambiando a: {razon_social or cuit}...")
+    btn = popup.locator('[title="Cambiar persona representada"]').first
+    btn.wait_for(timeout=TIMEOUT_MS)
+    btn.click()
+    popup.wait_for_timeout(1500)
+
+    cuit_fmt = _cuit_con_guiones(cuit)
+    link = popup.locator(f"a:has-text('{cuit_fmt}')").first
+    link.wait_for(timeout=TIMEOUT_MS)
+    link.click()
+
+    try:
+        popup.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+        popup.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+    print(f"  [SWITCH] ✓ Cambiado a: {razon_social or cuit}")
+
+
+def _set_fecha_range(popup, desde: str, hasta: str):
+    """Setea el rango de fechas usando jQuery.daterangepicker API."""
+    try:
+        # Intentar vía jQuery + daterangepicker (actualiza estado interno)
+        ok = popup.evaluate(f"""() => {{
+            const $el = $('#fechaEmision');
+            if ($el.length && $el.data('daterangepicker')) {{
+                const drp = $el.data('daterangepicker');
+                // moment reconoce DD/MM/YYYY con parse format explícito
+                drp.setStartDate(moment('{desde}', 'DD/MM/YYYY'));
+                drp.setEndDate(moment('{hasta}', 'DD/MM/YYYY'));
+                return true;
+            }}
+            // Fallback: jQuery val + trigger
+            if ($el.length) {{
+                $el.val('{desde} - {hasta}').trigger('change');
+                return true;
+            }}
+            return false;
+        }}""")
+        if ok:
+            popup.wait_for_timeout(500)
+            return True
+
+        # Último recurso: native value
+        fe = popup.locator("#fechaEmision")
+        if fe.count() > 0:
+            fe.fill(f"{desde} - {hasta}")
+            return True
+
+        return False
+    except Exception as e:
+        print(f"  [FILTRO] Warning: {e}")
+        return False
 
 
 def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> bool:
@@ -206,11 +275,20 @@ def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> boo
 
     print(f"  [FILTRO] Filtrando por período: {desde} → {hasta}")
     try:
-        popup.wait_for_selector("#fechaEmision", timeout=TIMEOUT_MS)
-        popup.evaluate(
-            f"document.getElementById('fechaEmision').value = '{desde} - {hasta}';"
-        )
-        popup.wait_for_timeout(300)
+        # Esperar a que cargue el formulario
+        popup.wait_for_selector("#buscarComprobantes", timeout=TIMEOUT_MS)
+        popup.wait_for_timeout(1000)
+
+        # Intentar daterangepicker primero; fallback a fechaEmision
+        if not _set_fecha_range(popup, desde, hasta):
+            try:
+                popup.evaluate(
+                    f"document.getElementById('fechaEmision').value = '{desde} - {hasta}';"
+                )
+                popup.wait_for_timeout(300)
+            except Exception:
+                pass
+
         popup.click("#buscarComprobantes")
         popup.wait_for_load_state("networkidle")
         popup.wait_for_timeout(5000)
@@ -224,21 +302,129 @@ def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> boo
         raise RuntimeError(f"Error aplicando filtros: {e}")
 
 
+def _extraer_datatable(popup) -> list[list[str]]:
+    """Extrae las filas completas de la DataTable vía su API JavaScript."""
+    try:
+        data = popup.evaluate("""
+            () => {
+                const table = $('#tablaDataTables').DataTable();
+                if (!table) return null;
+                try {
+                    const ex = table.buttons.exportData({ modifier: { page: 'all' } });
+                    return { header: ex.header, body: ex.body };
+                } catch(e) {
+                    return { header: [], body: [] };
+                }
+            }
+        """)
+        if not data or not isinstance(data, dict) or not data.get("body"):
+            return []
+        body = data["body"]
+        if not isinstance(body, list):
+            return []
+        return body
+    except Exception as e:
+        print(f"  [DATATABLE] Error: {e}")
+        return []
+
+
 def descargar_csv(popup) -> bytes:
-    """Click en botón CSV → descarga ZIP → retorna bytes del CSV."""
-    print("  [CSV] Descargando CSV...")
-    with popup.expect_download(timeout=30000) as dl_info:
-        popup.locator("button:has-text('CSV')").first.click()
-    download = dl_info.value
+    """Extrae datos de la DataTable y los convierte a CSV en memoria."""
+    print("  [CSV] Extrayendo datos de DataTable...")
+    try:
+        filas = _extraer_datatable(popup) or []
+    except Exception as e:
+        print(f"  [CSV] ⚠ Error extrayendo DataTable: {e}")
+        return b""
+    if not isinstance(filas, list) or not filas:
+        print("  [CSV] ⚠ Sin datos en la tabla.")
+        return b""
 
-    with open(download.path(), "rb") as f:
-        zip_bytes = f.read()
+    # Filtrar filas inválidas (DataTable vacía puede devolver [0])
+    filas = [f for f in filas if isinstance(f, list)]
 
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        csv_bytes = z.read(z.namelist()[0])
+    if not filas:
+        print("  [CSV] ⚠ Sin datos en la tabla.")
+        return b""
 
-    print(f"  [CSV] ✓ {len(csv_bytes)} bytes descargados.")
-    return csv_bytes
+    # DataTable column layout (52 cols):
+    # 0=Fecha, 1=Tipo, 2=Número(PtoVta-NroDesde),
+    # 3=PtoVta, 4=NroDesde, 5=NroHasta,
+    # 6=CodAut, 7=TipoCodAut, 8=CAE,
+    # 9-12=Emisor info, 13-15=Receptor info,
+    # 16=TipoCambio, 17=Moneda,
+    # 18-39=IVA detalle (pares raw/fmt),
+    # 40=NetoGravTotal_raw, 42=NetoNoGrav_raw,
+    # 44=Exentas_raw, 46=OtrosTrib_raw,
+    # 48=TotalIVA_raw, 50=ImpTotal_raw
+    #
+    # Los valores raw ya son números limpios (e.g. "1824885.52"),
+    # solo hay que reemplazar vacío/guion por "0"
+
+    lineas = [";".join([""] * 30)]  # dummy header (el parser saltea línea 0)
+    for f in filas:
+        def nv(i):
+            v = f[i] if len(f) > i else ""
+            return "0" if not v or v == "-" else v
+
+        cols_30 = [""] * 30
+        cols_30[0]  = f[0] if len(f) > 0 else ""                        # Fecha
+        cols_30[1]  = f[1].split(" - ")[0] if len(f) > 1 and " - " in f[1] else (f[1] if len(f) > 1 else "")  # Tipo
+        cols_30[2]  = f[3] if len(f) > 3 else ""                        # PtoVta
+        cols_30[3]  = f[4] if len(f) > 4 else ""                        # NroDesde
+        cols_30[4]  = f[5] if len(f) > 5 else ""                        # NroHasta
+        cols_30[5]  = f[8] if len(f) > 8 else ""                        # CAE
+        cols_30[6]  = f[10] if len(f) > 10 else ""                      # TipoDocEmisor
+        cols_30[7]  = f[11] if len(f) > 11 else ""                      # NroDocEmisor (CUIT)
+        cols_30[8]  = f[12].strip('"') if len(f) > 12 else ""           # DenomEmisor
+        cols_30[9]  = f[14] if len(f) > 14 else ""                      # TipoDocReceptor
+        cols_30[10] = f[15] if len(f) > 15 else ""                      # NroDocReceptor
+        cols_30[11] = f[16] if len(f) > 16 else "1"                     # TipoCambio
+        cols_30[12] = f[17] if len(f) > 17 else "PES"                   # Moneda
+        cols_30[24] = nv(40)                                             # NetoTotal
+        cols_30[25] = nv(42)                                             # NetoNoGrav
+        cols_30[26] = nv(44)                                             # Exentas
+        cols_30[27] = nv(46)                                             # OtrosTrib
+        cols_30[28] = nv(48)                                             # TotalIVA
+        cols_30[29] = nv(50)                                             # ImpTotal
+
+        lineas.append(";".join(cols_30))
+
+    csv_text = "\n".join(lineas)
+    print(f"  [CSV] ✓ {len(filas)} filas extraídas ({len(csv_text)} bytes).")
+
+    # Retornar CSV crudo (sin ZIP) igual que la original descargar_csv
+    return csv_text.encode("utf-8")
+
+
+def guardar_zip_arca(csv_bytes: bytes, empresa: str, tipo: str,
+                     periodo: str, output_dir: str = "descargas_arca") -> str:
+    """
+    Guarda el CSV empaquetado en ZIP con la estructura de carpetas y naming
+    que requiere el usuario:
+      {output_dir}/{empresa}/{tipo}/{empresa}_{periodo}_AAAAMMDD.zip
+
+    Retorna la ruta del ZIP guardado.
+    """
+    from datetime import date
+    ts = date.today().strftime("%Y%m%d")
+    safe_name = empresa.replace("/", "_").replace("\\", "_").strip()
+    folder = os.path.join(output_dir, safe_name, tipo)
+    os.makedirs(folder, exist_ok=True)
+
+    filename = f"{safe_name}_{periodo}_{ts}.zip"
+    path = os.path.join(folder, filename)
+
+    import zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("comprobantes.csv", csv_bytes.decode("utf-8", errors="replace"))
+
+    with open(path, "wb") as f:
+        f.write(buf.getvalue())
+
+    print(f"  [ARCHIVO] ✓ ZIP guardado: {path} ({buf.tell()} bytes)")
+    return path
 
 
 # ─── Parsing CSV (#1) ─────────────────────────────────────────────────────────
@@ -264,13 +450,17 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
     consistentes), cuit_receptor = CUIT del proveedor, denominacion_receptor
     = nombre del proveedor.
     """
+    es_recibido = (tipo == "recibidos")
+    tipo_op = "recibido" if es_recibido else "emitido"
+
+    if not csv_bytes:
+        print(f"  [PARSE] ⚠ 0 comprobantes {tipo_op}s (CSV vacío).")
+        return []
+
     try:
         texto = csv_bytes.decode("utf-8", errors="replace")
     except Exception:
         texto = csv_bytes.decode("latin-1", errors="replace")
-
-    es_recibido = (tipo == "recibidos")
-    tipo_op = "recibido" if es_recibido else "emitido"
     comprobantes = []
 
     for linea in texto.splitlines()[1:]:
@@ -315,7 +505,10 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
             try:
                 fecha = datetime.strptime(fecha_raw, "%Y-%m-%d").strftime("%d/%m/%Y")
             except ValueError:
-                fecha = fecha_raw
+                try:
+                    fecha = datetime.strptime(fecha_raw, "%d/%m/%Y").strftime("%d/%m/%Y")
+                except ValueError:
+                    fecha = fecha_raw
 
             comprobantes.append({
                 "cuit_emisor":           cuit_emisor,
@@ -348,30 +541,46 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
 
 @con_reintentos(max_intentos=3, demora_seg=10, no_reintentar=(LoginError,))
 def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
-                tipo: str = "emitidos") -> list[dict]:
+                tipo: str = "emitidos", output_dir: str = None) -> list[dict]:
     """
-    Scrapea los comprobantes de un CUIT para el período indicado.
+    Scrapea los comprobantes de uno o más CUITs representados para el período.
 
-    cuit_data : dict con keys 'cuit', 'password', 'razon_social'
+    cuit_data : dict con keys:
+        'cuit'         — CUIT del dueño (login)
+        'password'     — clave fiscal del dueño
+        'razon_social' — nombre del dueño (usa login CUIT si falta)
+        'cuit_representacion' — CUIT único de empresa (opcional)
+        'empresas'     — lista de dicts [{"cuit": ..., "razon_social": ...}]
+                         si está presente, itera todas en una misma sesión
     tipo      : 'emitidos' | 'recibidos'
+    output_dir: si se pasa, guarda los archivos ZIP organizados en carpetas
     Retorna   : lista de dicts listos para insertar en SQLite
     """
-    cuit         = cuit_data["cuit"]
+    cuit_login  = cuit_data["cuit"]
     password     = cuit_data["password"]
-    razon_social = cuit_data.get("razon_social", cuit)
     desde        = desde or PERIODO_DESDE
     hasta        = hasta or PERIODO_HASTA
     url_servicio = URL_EMITIDOS if tipo == "emitidos" else URL_RECIBIDOS
 
+    # Resolver lista de empresas a scrapear
+    empresas = cuit_data.get("empresas")
+    if not empresas:
+        cuit_rep = cuit_data.get("cuit_representacion", cuit_login)
+        razon    = cuit_data.get("razon_social", cuit_login)
+        empresas = [{"cuit": cuit_rep, "razon_social": razon}]
+
     print(f"\n{'='*60}")
-    print(f"  PROCESANDO [{tipo.upper()}]: {razon_social} ({cuit})")
-    print(f"  Período: {desde} → {hasta}")
+    print(f"  PROCESANDO [{tipo.upper()}] — {len(empresas)} empresa(s)")
+    print(f"  Login: {cuit_login}  |  Período: {desde} → {hasta}")
     print(f"{'='*60}")
+
+    todos_comprobantes = []
+    errores = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=HEADLESS,
-            executable_path="/snap/bin/chromium",
+            executable_path=os.path.join(os.path.dirname(__file__), "chromium-wrapper.sh"),
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = browser.new_context(
@@ -383,27 +592,40 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
         page.set_default_timeout(TIMEOUT_MS)
 
         try:
-            login_arca(page, cuit, password)
-
+            login_arca(page, cuit_login, password)
             popup = abrir_mis_comprobantes(context, page)
 
-            seleccionar_persona(popup, cuit)
+            for i, emp in enumerate(empresas):
+                cuit_rep    = emp["cuit"]
+                razon_social = emp.get("razon_social", cuit_rep)
 
-            buscar_comprobantes(popup, url_servicio, desde, hasta)
+                print(f"\n  ── Empresa {i+1}/{len(empresas)}: {razon_social} ({cuit_rep}) ──")
 
-            csv_bytes = descargar_csv(popup)
+                if i == 0:
+                    seleccionar_persona(popup, cuit_rep, razon_social)
+                else:
+                    cambiar_persona_representada(popup, cuit_rep, razon_social)
 
-            return _parsear_csv(csv_bytes, cuit, razon_social, tipo)
+                buscar_comprobantes(popup, url_servicio, desde, hasta)
+                csv_bytes = descargar_csv(popup)
+                comps = _parsear_csv(csv_bytes, cuit_rep, razon_social, tipo)
+                todos_comprobantes.extend(comps)
+
+                if output_dir and csv_bytes:
+                    # desde = dd/mm/yyyy → periodo = yyyymm
+                    periodo = desde[6:10] + desde[3:5]
+                    guardar_zip_arca(csv_bytes, razon_social, tipo, periodo, output_dir)
 
         except LoginError:
-            raise   # no capturar → el retry decorator la deja pasar
+            raise
         except Exception as e:
-            print(f"  [ERROR] {cuit} [{tipo}]: {e}")
-            if HEADLESS:
-                try:
-                    page.screenshot(path=f"debug_{cuit}_{tipo}.png")
-                except Exception:
-                    pass
-            raise   # re-lanzar para que el retry lo maneje
+            print(f"  [ERROR] {e}")
+            try:
+                page.screenshot(path=f"debug_{cuit_login}_{tipo}.png")
+            except Exception:
+                pass
+            raise
         finally:
             browser.close()
+
+    return todos_comprobantes

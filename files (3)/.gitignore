@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+*.db
+downloads/
+descargas_arca/
+comprobantes_*.xlsx
+comprobantes_*.csv
+debug_*.png
+corrida_*.log

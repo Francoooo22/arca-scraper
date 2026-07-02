@@ -14,7 +14,7 @@ Uso:
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import CUITS, PERIODO_DESDE, PERIODO_HASTA
@@ -67,12 +67,45 @@ def mostrar_resumen(cuit_filtro: str = None):
 def _tarea(cuit_data, desde, hasta, tipo):
     """Ejecuta scrape_cuit para un CUIT/tipo y retorna (cuit_data, tipo, resultado)."""
     try:
-        comprobantes = scrape_cuit(cuit_data, desde=desde, hasta=hasta, tipo=tipo)
+        comprobantes = scrape_cuit(cuit_data, desde=desde, hasta=hasta, tipo=tipo, output_dir="descargas_arca")
         return cuit_data, tipo, comprobantes, None
     except LoginError as e:
         return cuit_data, tipo, [], str(e)
     except Exception as e:
         return cuit_data, tipo, [], str(e)
+
+
+def _generar_meses(desde_str: str, hasta_str: str):
+    """
+    Genera tuplas (desde_mes, hasta_mes) en formato dd/mm/yyyy
+    para cada mes calendario entre desde_str y hasta_str.
+    Ej: '15/01/2025' - '10/03/2025' → ('15/01/2025','31/01/2025'),
+                                       ('01/02/2025','28/02/2025'),
+                                       ('01/03/2025','10/03/2025')
+    """
+    desde = datetime.strptime(desde_str, "%d/%m/%Y")
+    hasta = datetime.strptime(hasta_str, "%d/%m/%Y")
+
+    current = desde.replace(day=1)
+
+    while current <= hasta.replace(day=1):
+        # Primer día del próximo mes
+        if current.month == 12:
+            next_month = current.replace(year=current.year + 1, month=1)
+        else:
+            next_month = current.replace(month=current.month + 1)
+        ultimo = next_month - timedelta(days=1)
+
+        mes_desde = current.strftime("%d/%m/%Y")
+        mes_hasta = ultimo.strftime("%d/%m/%Y")
+
+        if current.year == desde.year and current.month == desde.month:
+            mes_desde = desde_str
+        if current.year == hasta.year and current.month == hasta.month:
+            mes_hasta = hasta_str
+
+        yield (mes_desde, mes_hasta)
+        current = next_month
 
 
 def main():
@@ -99,19 +132,30 @@ def main():
 
     cuits_a_procesar = CUITS
     if args.cuit:
-        cuits_a_procesar = [c for c in CUITS if c["cuit"] == args.cuit]
+        cuit_arg = args.cuit.replace("-", "")
+        def _match(c):
+            if c["cuit"].replace("-", "") == cuit_arg:
+                return True
+            if c.get("cuit_representacion", "").replace("-", "") == cuit_arg:
+                return True
+            for e in c.get("empresas", []):
+                if e["cuit"].replace("-", "") == cuit_arg:
+                    return True
+            return False
+        cuits_a_procesar = [c for c in CUITS if _match(c)]
         if not cuits_a_procesar:
             print(f"[ERROR] CUIT {args.cuit} no encontrado en config.py")
             sys.exit(1)
 
     tipos = ["emitidos", "recibidos"] if args.tipo == "ambos" else [args.tipo]
+    meses = list(_generar_meses(desde, hasta))
 
-    # Lista plana de tareas: (cuit_data, tipo)
-    tareas = [(cd, t) for cd in cuits_a_procesar for t in tipos]
+    # Lista plana de tareas: (cuit_data, tipo, mes_desde, mes_hasta)
+    tareas = [(cd, t, md, mh) for cd in cuits_a_procesar for t in tipos for md, mh in meses]
 
     print(f"\n{'#'*60}")
-    print(f"  ARCA SCRAPER — Comprobantes")
-    print(f"  Período  : {desde} → {hasta}")
+    print(f"  ARCA SCRAPER — Comprobantes (mes a mes)")
+    print(f"  Período  : {desde} → {hasta}  ({len(meses)} meses)")
     print(f"  Tipo     : {args.tipo}")
     print(f"  CUITs    : {len(cuits_a_procesar)}")
     print(f"  Tareas   : {len(tareas)}  |  Workers: {args.workers}")
@@ -124,17 +168,21 @@ def main():
 
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(_tarea, cd, desde, hasta, t): (cd, t)
-                for cd, t in tareas
+            fut_map = {
+                executor.submit(_tarea, cd, md, mh, t): (cd, t, md, mh)
+                for cd, t, md, mh in tareas
             }
-            for future in as_completed(futures):
+            for future in as_completed(fut_map):
+                cd, t, md, mh = fut_map[future]
                 cuit_data, tipo, comprobantes, error = future.result()
-                resultados.append(_procesar_resultado(cuit_data, tipo, comprobantes, error))
+                resultados.append(_procesar_resultado(cuit_data, tipo, comprobantes, error, md, mh))
     else:
-        for cuit_data, tipo in tareas:
-            _, tipo_r, comprobantes, error = _tarea(cuit_data, desde, hasta, tipo)
-            resultados.append(_procesar_resultado(cuit_data, tipo_r, comprobantes, error))
+        for cuit_data, tipo, md, mh in tareas:
+            print(f"\n{'─'*50}")
+            print(f"  Mes: {md} → {mh}")
+            print(f"{'─'*50}")
+            _, tipo_r, comprobantes, error = _tarea(cuit_data, md, mh, tipo)
+            resultados.append(_procesar_resultado(cuit_data, tipo_r, comprobantes, error, md, mh))
 
     # ── Resumen final ─────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
@@ -159,24 +207,25 @@ def main():
 
 
 def _procesar_resultado(cuit_data: dict, tipo: str,
-                         comprobantes: list, error: str | None) -> dict:
+                         comprobantes: list, error: str | None,
+                         mes_desde: str = "", mes_hasta: str = "") -> dict:
     """Inserta en DB y retorna dict de resultado para el resumen."""
-    cuit         = cuit_data["cuit"]
-    razon_social = cuit_data.get("razon_social", cuit)
-    tipo_op      = tipo.rstrip("s")   # 'emitidos' → 'emitido', 'recibidos' → 'recibido'
+    cuit_login  = cuit_data["cuit"]
+    razon_social = cuit_data.get("razon_social", cuit_login)
+    tipo_op      = tipo.rstrip("s")
 
-    log_id = log_inicio(cuit, razon_social, "", "", tipo_op)
+    log_id = log_inicio(cuit_login, razon_social, mes_desde, mes_hasta, tipo_op)
 
     if error:
         log_fin(log_id, "ERROR", 0, 0, error)
-        print(f"  [ERROR] {cuit} [{tipo}]: {error}")
-        return {"cuit": cuit, "razon_social": razon_social, "tipo": tipo,
+        print(f"  [ERROR] {cuit_login} [{tipo}] {mes_desde}→{mes_hasta}: {error}")
+        return {"cuit": cuit_login, "razon_social": razon_social, "tipo": tipo,
                 "total": 0, "nuevos": 0, "estado": f"ERROR: {error}"}
 
     total, nuevos = insertar_muchos(comprobantes)
     log_fin(log_id, "OK", total, nuevos)
-    print(f"  [DB] ✓ [{tipo}] {total} encontrados, {nuevos} nuevos insertados.")
-    return {"cuit": cuit, "razon_social": razon_social, "tipo": tipo,
+    print(f"  [DB] ✓ [{tipo}] {mes_desde}→{mes_hasta}: {total} encontrados, {nuevos} nuevos insertados.")
+    return {"cuit": cuit_login, "razon_social": razon_social, "tipo": tipo,
             "total": total, "nuevos": nuevos, "estado": "OK"}
 
 

@@ -1,53 +1,55 @@
-# ARCA Scraper — Comprobantes Emitidos
+# ARCA Scraper — Comprobantes 2025
 
-Scraper en Python + Playwright para descargar comprobantes emitidos desde
-el servicio "Mis Comprobantes" de ARCA (ex-AFIP). 100% gratuito, sin APIs de terceros.
+Scraper en Python + Playwright para descargar comprobantes **emitidos y recibidos**
+desde el servicio "Mis Comprobantes" de ARCA (ex-AFIP). 100% gratuito, sin APIs de terceros.
+
+Descarga mes a mes y guarda los archivos ZIP originales en carpetas organizadas
+por empresa y tipo, listos para importar en sistemas de gestión.
 
 ---
 
 ## Instalación
 
 ```bash
-# 1. Clonar / copiar la carpeta
-cd arca_scraper
-
-# 2. Crear entorno virtual (recomendado)
+cd arca-scraper
 python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Linux/Mac
-
-# 3. Instalar dependencias
+source venv/bin/activate           # Linux/Mac
 pip install -r requirements.txt
-
-# 4. Instalar el navegador Chromium para Playwright
 playwright install chromium
 ```
+
+En Ubuntu 26.04 con Chromium por snap, el scraper usa `chromium-wrapper.sh`
+para ejecutar el binario del snap automáticamente.
 
 ---
 
 ## Configuración
 
-Editá `config.py` y cargá tus clientes:
+Editá `config.py` con tus clientes:
 
 ```python
 CUITS = [
     {
         "cuit": "20111111111",
-        "razon_social": "Empresa SRL",
         "password": "clave_fiscal",
+        "razon_social": "Mi Empresa SRL",
+        "cuit_representacion": "30111111112",  # opcional
+        "empresas": [                           # o multi-empresa
+            {"cuit": "30222222223", "razon_social": "Empresa A S.A."},
+            {"cuit": "30222222224", "razon_social": "Empresa B S.R.L."},
+        ],
     },
-    # ...
 ]
 
 PERIODO_DESDE = "01/01/2025"
-PERIODO_HASTA = "31/05/2025"
-HEADLESS = False   # False = ver el navegador (recomendado para debug)
+PERIODO_HASTA = "31/12/2025"
+HEADLESS = True   # False para ver el navegador (debug)
 ```
 
-Opcionalmente podés usar un archivo `.env`:
+Opcionalmente via `.env`:
 ```
 PERIODO_DESDE=01/01/2025
-PERIODO_HASTA=31/05/2025
+PERIODO_HASTA=31/12/2025
 HEADLESS=true
 DB_PATH=arca_scraper.db
 ```
@@ -57,91 +59,78 @@ DB_PATH=arca_scraper.db
 ## Uso
 
 ```bash
-# Scrapear todos los CUITs del período configurado
+# Scrapear solo emitidos (default)
 python run.py
 
-# Scrapear un período específico
+# Scrapear solo recibidos
+python run.py --tipo recibidos
+
+# Scrapear ambos
+python run.py --tipo ambos
+
+# Período específico
 python run.py --desde 01/03/2025 --hasta 31/03/2025
 
-# Scrapear solo un CUIT
-python run.py --cuit 20111111111
+# Solo un CUIT
+python run.py --cuit 30716583445
 
-# Solo exportar lo que ya está en la DB (sin scrapear)
+# Paralelizar CUITs/meses
+python run.py --workers 3
+
+# Exportar DB a Excel o CSV (sin scrapear)
 python run.py --export excel
 python run.py --export csv
 
-# Ver resumen por período
+# Resumen por período
 python run.py --resumen
-
-# Scrapear sin generar Excel al final
-python run.py --no-export
 ```
 
 ---
 
-## Estructura de archivos
+## Archivos descargados
+
+El scraper guarda los ZIP originales en:
+
+```
+descargas_arca/
+  Wolf Travel S.A./
+    recibidos/
+      Wolf Travel S.A._202501_20260702.zip
+      Wolf Travel S.A._202502_20260702.zip
+      ...
+    emitidos/   (idem)
+  Otra Empresa/
+    recibidos/
+    emitidos/
+```
+
+Cada ZIP contiene `comprobantes.csv` en el formato exacto de ARCA (30 columnas),
+listo para importar en sistemas de gestión sin modificaciones.
+
+---
+
+## Estructura del proyecto
 
 ```
 arca_scraper/
-├── config.py         # Lista de CUITs y configuración general
-├── db.py             # SQLite: schema, insert, consulta
-├── scraper.py        # Playwright: login ARCA + parseo de tabla
-├── export.py         # Exportación a Excel / CSV
-├── run.py            # Entry point con argumentos CLI
+├── config.py         # CUITs, credenciales, período, HEADLESS
+├── db.py             # SQLite: schema, inserción, consultas, log
+├── scraper.py        # Playwright: login, navegación, DataTable, ZIP
+├── export.py         # Exportación consolidada a Excel / CSV
+├── run.py            # Entry point CLI con workers y meses
 ├── requirements.txt
-├── arca_scraper.db   # (generado automáticamente)
-└── downloads/        # (para futura descarga de PDFs)
+├── chromium-wrapper.sh  # Wrapper para Chromium snap (Ubuntu)
+├── .env              # Config via variables de entorno (opcional)
+├── arca_scraper.db   # SQLite con todos los comprobantes
+└── descargas_arca/   # ZIPS originales de ARCA (generado)
 ```
 
 ---
 
-## ⚠ Notas importantes
+## Notas
 
-### Selectores de ARCA pueden cambiar
-ARCA actualiza su frontend periódicamente. Si el scraper deja de funcionar,
-inspeccioná el elemento en el navegador (F12) y actualizá los selectores
-en `scraper.py`.
-
-### Debug con HEADLESS=False
-Mientras probás, dejá `HEADLESS = False` en `config.py` para ver qué hace
-el navegador y detectar problemas de login, captchas, o cambios en la UI.
-
-### Screenshots de debug
-Cuando `HEADLESS = True`, el scraper guarda un screenshot `debug_{cuit}.png`
-por cada CUIT procesado para poder diagnosticar problemas.
-
-### Captcha
-ARCA no tiene captcha en el login de clave fiscal estándar. Si aparece,
-puede ser por múltiples intentos fallidos — esperá unos minutos.
-
-### Nacional Software / integración
-El CSV exportado puede importarse directamente en la mayoría de ERPs.
-La DB SQLite puede consultarse desde Python/pandas para generar reportes
-o cruzar con datos de Nacional Software via SQL.
-
----
-
-## Control de exclusión (uso avanzado)
-
-Los comprobantes tienen el campo `incluido_ddjj` (0/1). Podés marcarlos
-manualmente o via script después de presentar cada DDJJ:
-
-```python
-import sqlite3
-conn = sqlite3.connect("arca_scraper.db")
-conn.execute("""
-    UPDATE comprobantes_emitidos
-    SET incluido_ddjj = 1
-    WHERE periodo_fiscal = '202503' AND cuit_emisor = '20111111111'
-""")
-conn.commit()
-```
-
----
-
-## Próximos módulos (roadmap)
-
-- [ ] `scraper_retenciones.py` — Mis Retenciones / Percepciones
-- [ ] `scraper_recibidos.py`   — Mis Comprobantes Recibidos
-- [ ] `scraper_sifere.py`      — SIFERE IIBB retenciones
-- [ ] `api.py`                 — Flask REST API para integración con otras apps
+- ARCA no tiene captcha en el login de clave fiscal estándar
+- Si el scraper deja de funcionar, actualizá los selectores CSS en `scraper.py`
+- Usá `HEADLESS = False` para debuggear con el navegador visible
+- Los comprobantes se insertan con `INSERT OR IGNORE` para evitar duplicados
+- La DB usa `tipo_operacion = 'emitido' | 'recibido'` en una misma tabla
