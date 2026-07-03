@@ -6,43 +6,47 @@ Flask + scraper en background + log en tiempo real via SSE.
 import os
 import sys
 import json
-import time
+import io
+import contextlib
 import threading
 import queue
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, Response
 
-# Ajustar path para imports
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config import CUITS, PERIODO_DESDE, PERIODO_HASTA
 from scraper import scrape_cuit, LoginError
 
 app = Flask(__name__)
 
-# Cola de logs en tiempo real
 log_queue = queue.Queue()
 scraper_running = False
 scraper_result = None
 
 
-class LogCapture:
-    """Captura stdout y lo envía a la cola de logs."""
+class ThreadSafeLogCapture(io.TextIOBase):
     def __init__(self):
-        self.original = sys.stdout
+        self._buf = ""
 
     def write(self, text):
-        if text.strip():
-            log_queue.put(text)
-        self.original.write(text)
+        if not text:
+            return 0
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.strip()
+            if line:
+                log_queue.put(line)
+        return len(text)
 
     def flush(self):
-        self.original.flush()
+        if self._buf.strip():
+            log_queue.put(self._buf.strip())
+            self._buf = ""
 
 
 def _generar_meses(desde_str, hasta_str):
-    from datetime import datetime, timedelta
     desde = datetime.strptime(desde_str, "%d/%m/%Y")
     hasta = datetime.strptime(hasta_str, "%d/%m/%Y")
     current = desde.replace(day=1)
@@ -67,9 +71,6 @@ def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSelecc
     scraper_running = True
     scraper_result = None
 
-    old_stdout = sys.stdout
-    sys.stdout = LogCapture()
-
     try:
         cuit_data = {
             "cuit": cuit,
@@ -89,12 +90,15 @@ def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSelecc
 
         rangos = list(_generar_meses(desde, hasta))
 
-        archivos = scrape_cuit(
-            cuit_data,
-            tipo=tipo,
-            rangos=rangos,
-            output_dir="descargas_arca",
-        )
+        capture = ThreadSafeLogCapture()
+        with contextlib.redirect_stdout(capture):
+            archivos = scrape_cuit(
+                cuit_data,
+                tipo=tipo,
+                rangos=rangos,
+                output_dir="descargas_arca",
+            )
+        capture.flush()
 
         scraper_result = {"ok": True, "archivos": len(archivos), "rutas": archivos}
     except LoginError as e:
@@ -102,7 +106,6 @@ def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSelecc
     except Exception as e:
         scraper_result = {"ok": False, "error": str(e)}
     finally:
-        sys.stdout = old_stdout
         scraper_running = False
         log_queue.put("__DONE__")
 
@@ -131,7 +134,6 @@ def start_scraper():
     if not meses:
         return jsonify({"error": "Seleccioná al menos un mes"}), 400
 
-    # Limpiar cola de logs previos
     while not log_queue.empty():
         try:
             log_queue.get_nowait()
