@@ -19,6 +19,7 @@ Mejoras:
 
 import io
 import os
+import re
 import time
 import zipfile
 import functools
@@ -522,7 +523,7 @@ def _guardar_archivo(rows: list[list[str]], empresa: str, tipo: str,
     """
     import csv, io
 
-    safe_name = empresa.replace("/", "_").replace("\\", "_").strip()
+    safe_name = re.sub(r'[^\w\-]', '_', empresa).strip('_')
     folder = os.path.join(output_dir, safe_name, tipo)
     os.makedirs(folder, exist_ok=True)
 
