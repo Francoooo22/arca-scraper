@@ -46,27 +46,7 @@ class ThreadSafeLogCapture(io.TextIOBase):
             self._buf = ""
 
 
-def _generar_meses(desde_str, hasta_str):
-    desde = datetime.strptime(desde_str, "%d/%m/%Y")
-    hasta = datetime.strptime(hasta_str, "%d/%m/%Y")
-    current = desde.replace(day=1)
-    while current <= hasta.replace(day=1):
-        if current.month == 12:
-            next_month = current.replace(year=current.year + 1, month=1)
-        else:
-            next_month = current.replace(month=current.month + 1)
-        ultimo = next_month - timedelta(days=1)
-        mes_desde = current.strftime("%d/%m/%Y")
-        mes_hasta = ultimo.strftime("%d/%m/%Y")
-        if current.year == desde.year and current.month == desde.month:
-            mes_desde = desde_str
-        if current.year == hasta.year and current.month == hasta.month:
-            mes_hasta = hasta_str
-        yield (mes_desde, mes_hasta)
-        current = next_month
-
-
-def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSeleccionados):
+def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, periods):
     global scraper_running, scraper_result
     scraper_running = True
     scraper_result = None
@@ -79,25 +59,33 @@ def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSelecc
             "empresas": [{"cuit": empresa_cuit, "razon_social": empresa_nombre}],
         }
 
-        desde = f"01/{mesesSeleccionados[0]:02d}/2025"
-        hasta_dia = 28
-        mes_int = mesesSeleccionados[-1]
-        if mes_int in (1, 3, 5, 7, 8, 10, 12):
-            hasta_dia = 31
-        elif mes_int in (4, 6, 9, 11):
-            hasta_dia = 30
-        hasta = f"{hasta_dia}/{mesesSeleccionados[-1]:02d}/2025"
+        def dias_del_mes(anio, mes):
+            if mes in (1, 3, 5, 7, 8, 10, 12):
+                return 31
+            if mes in (4, 6, 9, 11):
+                return 30
+            if mes == 2:
+                if anio % 4 == 0 and (anio % 100 != 0 or anio % 400 == 0):
+                    return 29
+                return 28
 
-        rangos = list(_generar_meses(desde, hasta))
+        rangos = []
+        for p in sorted(periods, key=lambda x: (x["year"], x["month"])):
+            anio = p["year"]
+            mes = p["month"]
+            desde = f"01/{mes:02d}/{anio}"
+            hasta_dia = dias_del_mes(anio, mes)
+            hasta = f"{hasta_dia}/{mes:02d}/{anio}"
+            rangos.append((desde, hasta))
 
         capture = ThreadSafeLogCapture()
         with contextlib.redirect_stdout(capture):
-        archivos = scrape_cuit(
-            cuit_data,
-            tipo=tipo,
-            rangos=rangos,
-            output_dir="/home/pc_wolf_05/descargas_arca",
-        )
+            archivos = scrape_cuit(
+                cuit_data,
+                tipo=tipo,
+                rangos=rangos,
+                output_dir="/home/pc_wolf_05/descargas_arca",
+            )
         capture.flush()
 
         scraper_result = {"ok": True, "archivos": len(archivos), "rutas": archivos}
@@ -127,11 +115,11 @@ def start_scraper():
     empresa_cuit = data.get("empresa_cuit", "").strip()
     empresa_nombre = data.get("empresa_nombre", "").strip()
     tipo = data.get("tipo", "recibidos")
-    meses = data.get("meses", [])
+    periods = data.get("periods", [])
 
     if not cuit or not password:
         return jsonify({"error": "CUIT y clave son obligatorios"}), 400
-    if not meses:
+    if not periods:
         return jsonify({"error": "Seleccioná al menos un mes"}), 400
 
     while not log_queue.empty():
@@ -142,7 +130,7 @@ def start_scraper():
 
     t = threading.Thread(
         target=_run_scraper,
-        args=(cuit, password, empresa_cuit, empresa_nombre, tipo, meses),
+        args=(cuit, password, empresa_cuit, empresa_nombre, tipo, periods),
         daemon=True,
     )
     t.start()
