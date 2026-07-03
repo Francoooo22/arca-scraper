@@ -338,10 +338,14 @@ def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> boo
 def _extraer_datatable(popup) -> list[list[str]]:
     """Extrae las filas completas de la DataTable vía su API JavaScript.
 
-    Primero fuerza page length a -1 (todas las filas), luego extrae.
+    Estrategia:
+      1. Intenta page.len(-1) para cargar todo de una
+      2. Si falla o devuelve pocos resultados, itera página por página
     """
+    all_rows = []
+
     try:
-        # Forzar que la DataTable muestre TODAS las filas en una sola página
+        # Método 1: intentar cargar todo de una
         popup.evaluate("""
             () => {
                 try {
@@ -356,8 +360,6 @@ def _extraer_datatable(popup) -> list[list[str]]:
             () => {
                 const table = $('#tablaDataTables').DataTable();
                 if (!table) return null;
-
-                // Método 1: rows().data() — todas las filas
                 try {
                     const rows = table.rows({ search: 'applied' }).data().toArray();
                     if (rows && rows.length > 0) {
@@ -369,30 +371,67 @@ def _extraer_datatable(popup) -> list[list[str]]:
                         return { body: body, metodo: 'rows' };
                     }
                 } catch(e) {}
-
-                // Método 2: buttons.exportData (fallback)
-                try {
-                    const ex = table.buttons.exportData({ modifier: { page: 'all' } });
-                    if (ex && ex.body && ex.body.length > 0) {
-                        return { body: ex.body, metodo: 'buttons' };
-                    }
-                } catch(e) {}
-
                 return { body: [], metodo: 'empty' };
             }
         """)
-        if not data or not isinstance(data, dict) or not data.get("body"):
-            return []
-        body = data["body"]
-        metodo = data.get("metodo", "?")
-        if not isinstance(body, list):
-            return []
-        if body:
-            print(f"  [DATATABLE] {len(body)} filas extraídas (método: {metodo})")
-        return body
+
+        if data and isinstance(data, dict) and data.get("body"):
+            body = data["body"]
+            if isinstance(body, list) and len(body) > 5:
+                print(f"  [DATATABLE] {len(body)} filas extraídas (método: page_all)")
+                return body
+
+        # Método 2: iterar página por página
+        print(f"  [DATATABLE] Fallback: iterando páginas...")
+        page_info = popup.evaluate("""
+            () => {
+                const table = $('#tablaDataTables').DataTable();
+                if (!table) return null;
+                // Restaurar paginación normal
+                table.page.len(10).draw();
+                const info = table.page.info();
+                return { pages: info.pages, total: info.recordsDisplay };
+            }
+        """)
+        if not page_info:
+            return all_rows
+
+        total_pages = page_info.get("pages", 0)
+        total_records = page_info.get("total", 0)
+        print(f"  [DATATABLE] {total_records} registros en {total_pages} páginas")
+
+        for pg in range(total_pages):
+            popup.evaluate(f"""
+                () => {{
+                    const table = $('#tablaDataTables').DataTable();
+                    table.page({pg}).draw('page');
+                }}
+            """)
+            popup.wait_for_timeout(1500)
+
+            page_rows = popup.evaluate("""
+                () => {
+                    const table = $('#tablaDataTables').DataTable();
+                    if (!table) return [];
+                    const rows = table.rows({ page: 'current', search: 'applied' }).data().toArray();
+                    return rows.map(r => {
+                        if (Array.isArray(r)) return r.map(v => v == null ? '' : String(v));
+                        if (typeof r === 'object') return Object.values(r).map(v => v == null ? '' : String(v));
+                        return [String(r)];
+                    });
+                }
+            """)
+            if isinstance(page_rows, list):
+                all_rows.extend(page_rows)
+                if (pg + 1) % 6 == 0 or pg == total_pages - 1:
+                    print(f"  [DATATABLE] Página {pg+1}/{total_pages} — {len(all_rows)} filas acumuladas")
+
+        print(f"  [DATATABLE] ✓ {len(all_rows)} filas extraídas (paginado)")
+        return all_rows
+
     except Exception as e:
         print(f"  [DATATABLE] Error: {e}")
-        return []
+        return all_rows if all_rows else []
 
 
 # ─── Parsing CSV (#1) ─────────────────────────────────────────────────────────
@@ -515,36 +554,140 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
 
 # ─── Función principal ────────────────────────────────────────────────────────
 
-def _guardar_archivo(rows: list[list[str]], empresa: str, tipo: str,
-                     periodo: str, output_dir: str) -> str:
+def _descargar_archivo_arca(popup, empresa: str, tipo: str,
+                             periodo: str, output_dir: str) -> str:
     """
-    Guarda filas extraídas de la DataTable como CSV dentro de un ZIP.
-    Retorna la ruta del archivo guardado, o "" si no hay datos.
+    Descarga el archivo real de ARCA usando el botón de descarga.
+    Intercepta la URL de descarga y usa fetch() desde JS (solución snap Chromium).
+    Primero intenta Excel, si falla intenta CSV.
+    Retorna la ruta del archivo guardado, o "" si no se pudo descargar.
     """
-    import csv, io
-
     safe_name = re.sub(r'[^\w\-]', '_', empresa).strip('_')
     folder = os.path.join(output_dir, safe_name, tipo)
     os.makedirs(folder, exist_ok=True)
 
-    if not rows:
+    tc = "E" if tipo == "emitidos" else "R"
+
+    # Verificar si hay datos
+    info = popup.evaluate("""
+        () => {
+            const table = $('#tablaDataTables').DataTable();
+            if (!table) return null;
+            const info = table.page.info();
+            return { total: info.recordsDisplay };
+        }
+    """)
+    if not info or info.get("total", 0) == 0:
+        print(f"  [DOWNLOAD] ⚠ Sin datos para descargar.")
         return ""
 
-    # Escribir CSV en memoria
-    buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-    for row in rows:
-        writer.writerow(row)
-    csv_bytes = buf.getvalue().encode("utf-8")
+    total = info["total"]
+    print(f"  [DOWNLOAD] {total} comprobantes para descargar.")
 
-    # Guardar como ZIP
-    filename = f"{safe_name}_{tipo}_{periodo}.zip"
-    filepath = os.path.join(folder, filename)
-    with zipfile.ZipFile(filepath, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{safe_name}_{tipo}_{periodo}.csv", csv_bytes)
+    # Obtener cookies de la sesión para el fetch
+    cookies = popup.context.cookies()
+    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
 
-    print(f"  [ARCHIVO] ✓ ZIP guardado: {filepath} ({os.path.getsize(filepath)} bytes)")
-    return filepath
+    # Para cada formato: Excel primero, CSV después
+    for formato, boton_texto, tf in [("xls", "Excel", "xls"), ("csv", "CSV", "csv")]:
+        print(f"  [DOWNLOAD] Intentando {boton_texto}...")
+
+        try:
+            btn = popup.locator(f"button:has-text('{boton_texto}')").first
+            if btn.count() == 0:
+                print(f"  [DOWNLOAD] Botón '{boton_texto}' no encontrado.")
+                continue
+
+            # Interceptar la URL de descarga
+            captured_url = {"url": None}
+
+            def on_request(request):
+                if "descargarComprobantes.do" in request.url:
+                    captured_url["url"] = request.url
+
+            popup.on("request", on_request)
+
+            # Click en el botón de descarga
+            btn.click()
+            popup.wait_for_timeout(3000)
+
+            popup.remove_listener("request", on_request)
+
+            if not captured_url["url"]:
+                print(f"  [DOWNLOAD] ✗ No se capturó URL de descarga para {boton_texto}.")
+                continue
+
+            dl_url = captured_url["url"]
+            print(f"  [DOWNLOAD] URL capturada: {dl_url[:80]}...")
+
+            # Usar fetch() desde el navegador para descargar
+            result = popup.evaluate(f"""
+                async () => {{
+                    try {{
+                        const resp = await fetch("{dl_url}", {{
+                            credentials: 'include',
+                            headers: {{
+                                'Cookie': '{cookie_str}'
+                            }}
+                        }});
+                        if (!resp.ok) return {{ error: 'HTTP ' + resp.status }};
+                        const contentType = resp.headers.get('content-type') || '';
+                        const blob = await resp.blob();
+                        const reader = new FileReader();
+                        return new Promise((resolve) => {{
+                            reader.onloadend = () => {{
+                                resolve({{
+                                    data: reader.result,
+                                    size: blob.size,
+                                    type: contentType,
+                                    url: resp.url
+                                }});
+                            }};
+                            reader.readAsDataURL(blob);
+                        }});
+                    }} catch(e) {{
+                        return {{ error: e.message }};
+                    }}
+                }}
+            """)
+
+            if not result or result.get("error"):
+                print(f"  [DOWNLOAD] ✗ Error fetch: {result}")
+                continue
+
+            data_url = result.get("data", "")
+            if not data_url or "," not in data_url:
+                print(f"  [DOWNLOAD] ✗ Respuesta vacía.")
+                continue
+
+            # Decodificar base64
+            import base64
+            _, b64data = data_url.split(",", 1)
+            raw_bytes = base64.b64decode(b64data)
+
+            if len(raw_bytes) < 100:
+                print(f"  [DOWNLOAD] ✗ Archivo muy pequeño ({len(raw_bytes)} bytes), posible error.")
+                continue
+
+            # Determinar extensión del contenido
+            # ARCA devuelve ZIP conteniendo CSV, guardarlo como .zip
+            ext = "zip"
+            filename = f"{safe_name}_{tipo}_{periodo}.{ext}"
+            filepath = os.path.join(folder, filename)
+
+            with open(filepath, "wb") as f:
+                f.write(raw_bytes)
+
+            filesize = os.path.getsize(filepath)
+            print(f"  [DOWNLOAD] ✓ {boton_texto} guardado: {filepath} ({filesize:,} bytes)")
+            return filepath
+
+        except Exception as e:
+            print(f"  [DOWNLOAD] ✗ Error con {boton_texto}: {e}")
+            continue
+
+    print(f"  [DOWNLOAD] ⚠ No se pudo descargar ningún archivo.")
+    return ""
 
 
 def _scrape_empresa_rangos(popup, cuit_rep: str, razon_social: str,
@@ -553,7 +696,7 @@ def _scrape_empresa_rangos(popup, cuit_rep: str, razon_social: str,
     """
     Para una empresa ya seleccionada en el popup, recorre todos los rangos
     de fechas en la misma sesión del navegador.
-    Extrae datos de la DataTable del DOM y los guarda como CSV/ZIP.
+    Descarga archivos reales de ARCA (Excel o CSV).
     """
     url_servicio = URL_EMITIDOS if tipo == "emitidos" else URL_RECIBIDOS
     archivos = []
@@ -564,17 +707,10 @@ def _scrape_empresa_rangos(popup, cuit_rep: str, razon_social: str,
 
         periodo = desde[6:10] + desde[3:5]
 
-        print(f"  [CSV] Extrayendo datos de DataTable...")
-        rows = _extraer_datatable(popup)
-
-        if rows:
-            print(f"  [CSV] ✓ {len(rows)} filas extraídas.")
-            if output_dir:
-                filepath = _guardar_archivo(rows, razon_social, tipo, periodo, output_dir)
-                if filepath:
-                    archivos.append(filepath)
-        else:
-            print(f"  [CSV] ⚠ Sin datos en la tabla.")
+        if output_dir:
+            filepath = _descargar_archivo_arca(popup, razon_social, tipo, periodo, output_dir)
+            if filepath:
+                archivos.append(filepath)
 
     return archivos
 

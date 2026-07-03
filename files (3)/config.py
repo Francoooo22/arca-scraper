@@ -20,6 +20,8 @@ CUITS = [
         "razon_social": "Cristian De Benedectis",
         "empresas": [
             {"cuit": "30716583445", "razon_social": "Wolf Travel S.A."},
+            {"cuit": "30719185653", "razon_social": "LANTIER S.A."},
+            {"cuit": "30709590657", "razon_social": "ARAMENDI Y ASOCIADOS SOCIEDAD ANONIMA"},
         ],
     },
     # ── Formato simple (1 empresa sin lista) ──────────────────────────────

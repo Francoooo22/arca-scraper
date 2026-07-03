@@ -209,8 +209,9 @@ def main():
             print(f"[ERROR] CUIT {args.cuit} no encontrado en config.py")
             sys.exit(1)
 
-    # ── Seleccionar empresa (solo si hay varias) ──────────────────────────
-    cuits_a_procesar = _seleccionar_empresas(cuits_a_procesar)
+    # ── Seleccionar empresa (solo si hay varias y NO se pasó --cuit) ─────
+    if not args.cuit:
+        cuits_a_procesar = _seleccionar_empresas(cuits_a_procesar)
 
     tipos = ["emitidos", "recibidos"] if args.tipo == "ambos" else [args.tipo]
     meses = list(_generar_meses(desde, hasta))
