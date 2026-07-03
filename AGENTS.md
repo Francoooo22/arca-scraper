@@ -24,6 +24,7 @@ vía la web interface. Archivos reales descargados del portal (CSV/ZIP).
 | Wolf Travel S.A. | `30716583445` (empresa propia) |
 | LANTIER S.A. | `30719185653` (representación) |
 | ARAMENDI Y ASOCIADOS S.A. | `30709590657` (representación) |
+| FAMILY GROUP S.A. | `30717781984` (representación) |
 
 ### Configuración en `config.py`
 
@@ -37,6 +38,7 @@ CUITS = [
             {"cuit": "30716583445", "razon_social": "Wolf Travel S.A."},
             {"cuit": "30719185653", "razon_social": "LANTIER S.A."},
             {"cuit": "30709590657", "razon_social": "ARAMENDI Y ASOCIADOS SOCIEDAD ANONIMA"},
+            {"cuit": "30717781984", "razon_social": "FAMILY GROUP S.A."},
         ],
     },
 ]
@@ -158,6 +160,9 @@ cd ~/arca-scraper/files\ \(3\)
 # Empresa específica por CUIT (NO usa menú interactivo)
 ~/arca-scraper/venv/bin/python run.py --cuit 30709590657 --tipo ambos
 
+# Solo una empresa del CUIT (filtrar por nombre o CUIT de empresa)
+~/arca-scraper/venv/bin/python run.py --cuit 23348079719 --empresa "FAMILY GROUP" --tipo ambos
+
 # Período específico
 ~/arca-scraper/venv/bin/python run.py --cuit 30709590657 --tipo ambos \
     --desde 01/01/2025 --hasta 30/06/2026
@@ -166,6 +171,11 @@ cd ~/arca-scraper/files\ \(3\)
 **IMPORTANTE**: Siempre usar `--cuit` para evitar el menú interactivo que
 pendea cuando hay más de una empresa configurada. Sin `--cuit`, el script
 pide input por stdin y se cuelga en ejecución no interactiva.
+
+**FILTRAR POR EMPRESA**: El flag `--empresa` permite scrapear solo una empresa
+específica cuando el CUIT de login tiene múltiples empresas configuradas.
+Acepta nombre (parcial) o CUIT de la empresa. Ejemplo:
+`--empresa "FAMILY GROUP"` o `--empresa 30717781984`
 
 ### Resumen de archivos descargados
 ```bash
@@ -214,6 +224,13 @@ pide input por stdin y se cuelga en ejecución no interactiva.
 - **Problema**: El botón Excel de ARCA genera el archivo internamente sin
   disparar el request `descargarComprobantes.do`
 - **Solución**: Se usa botón CSV que sí genera la URL interceptable
+
+### 9. Flag `--empresa` no filtraba (Julio 2026)
+- **Problema**: El argumento `--empresa` existía en `run.py` pero nunca se usaba
+  para filtrar la lista de empresas. Siempre scrapear todas las empresas del CUIT.
+- **Solución**: Agregué lógica de filtrado en `run.py` que busca por nombre
+  (parcial, case-insensitive) o CUIT de empresa dentro de la lista `empresas`.
+- **Archivo**: `run.py` → bloque `if args.empresa:` después del filtro `--cuit`
 
 ---
 

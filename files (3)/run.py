@@ -209,6 +209,23 @@ def main():
             print(f"[ERROR] CUIT {args.cuit} no encontrado en config.py")
             sys.exit(1)
 
+    # ── Filtrar empresa específica ──────────────────────────────────────────
+    if args.empresa:
+        emp_arg = args.empresa.strip().lower()
+        for cd in cuits_a_procesar:
+            empresas_orig = cd.get("empresas", [])
+            if not empresas_orig:
+                continue
+            filtradas = [
+                e for e in empresas_orig
+                if emp_arg in e["cuit"].replace("-", "")
+                or emp_arg in e.get("razon_social", "").lower()
+            ]
+            if not filtradas:
+                print(f"[ERROR] Empresa '{args.empresa}' no encontrada en {cd.get('razon_social', cd['cuit'])}")
+                sys.exit(1)
+            cd["empresas"] = filtradas
+
     # ── Seleccionar empresa (solo si hay varias y NO se pasó --cuit) ─────
     if not args.cuit:
         cuits_a_procesar = _seleccionar_empresas(cuits_a_procesar)
