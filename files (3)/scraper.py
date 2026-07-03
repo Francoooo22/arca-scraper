@@ -7,7 +7,7 @@ Flujo:
   3. Pantalla de selección de persona (representación) si aplica
   4. Navegar a comprobantesEmitidos.do o comprobantesRecibidos.do
   5. Setear #fechaEmision con "dd/mm/yyyy - dd/mm/yyyy" → click #buscarComprobantes
-  6. Click botón CSV → descarga ZIP → extraer → parsear
+  6. Extraer datos de la DataTable vía JS → guardar como CSV/ZIP
 
 Mejoras:
   - Reintentos automáticos (#3)
@@ -175,6 +175,47 @@ def _detectar_pantalla_personas(popup):
             or popup.locator('[title="Cambiar persona representada"]').count() > 0)
 
 
+def _click_cuit_en_pantalla(popup, cuit: str, contexto: str = ""):
+    """
+    Busca y hace click en un CUIT en la pantalla de selección de persona.
+    Usa múltiples selectores como fallback.
+    """
+    cuit_fmt = _cuit_con_guiones(cuit)
+    prefijo = f"  [{contexto}] " if contexto else "  "
+
+    # Selectores en orden de preferencia
+    selectores = [
+        f"a.panel:has-text('{cuit_fmt}')",
+        f"a:has-text('{cuit_fmt}')",
+        f"a:has-text('{cuit}')",
+        f"td:has-text('{cuit_fmt}')",
+        f"td:has-text('{cuit}')",
+        f"span:has-text('{cuit_fmt}')",
+        f"span:has-text('{cuit}')",
+    ]
+
+    for sel in selectores:
+        try:
+            elem = popup.locator(sel).first
+            if elem.count() > 0:
+                elem.click()
+                print(f"{prefijo}Click en: {sel}")
+                return True
+        except Exception:
+            continue
+
+    # Último recurso: submit del formulario
+    print(f"{prefijo}Fallback: submit del formulario...")
+    try:
+        popup.evaluate(
+            "document.getElementById('idcontribuyente').value='0';"
+            "document.seleccionaEmpresaForm.submit();"
+        )
+        return True
+    except Exception:
+        return False
+
+
 def seleccionar_persona(popup, cuit: str, razon_social: str = ""):
     """
     Si aparece la pantalla 'Elegí una persona para ingresar' / 'REPRESENTAR A:',
@@ -184,16 +225,7 @@ def seleccionar_persona(popup, cuit: str, razon_social: str = ""):
         return
 
     print(f"  [PERSONA] Seleccionando: {razon_social or cuit}...")
-    cuit_fmt = _cuit_con_guiones(cuit)
-
-    link = popup.locator(f"a:has-text('{cuit_fmt}')").first
-    if link.count() > 0:
-        link.click()
-    else:
-        popup.evaluate(
-            "document.getElementById('idcontribuyente').value='0';"
-            "document.seleccionaEmpresaForm.submit();"
-        )
+    _click_cuit_en_pantalla(popup, cuit, "PERSONA")
 
     try:
         popup.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
@@ -215,10 +247,7 @@ def cambiar_persona_representada(popup, cuit: str, razon_social: str = ""):
     btn.click()
     popup.wait_for_timeout(1500)
 
-    cuit_fmt = _cuit_con_guiones(cuit)
-    link = popup.locator(f"a:has-text('{cuit_fmt}')").first
-    link.wait_for(timeout=TIMEOUT_MS)
-    link.click()
+    _click_cuit_en_pantalla(popup, cuit, "SWITCH")
 
     try:
         popup.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
@@ -302,129 +331,57 @@ def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> boo
         raise RuntimeError(f"Error aplicando filtros: {e}")
 
 
+
+
+
 def _extraer_datatable(popup) -> list[list[str]]:
-    """Extrae las filas completas de la DataTable vía su API JavaScript."""
+    """Extrae las filas completas de la DataTable vía su API JavaScript.
+
+    Intenta primero con buttons.exportData (incluye filas de todas las páginas).
+    Si el plugin Buttons no está disponible, usa rows().data() directamente.
+    """
     try:
         data = popup.evaluate("""
             () => {
                 const table = $('#tablaDataTables').DataTable();
                 if (!table) return null;
+
+                // Método 1: buttons.exportData (más completo, incluye toda la paginación)
                 try {
                     const ex = table.buttons.exportData({ modifier: { page: 'all' } });
-                    return { header: ex.header, body: ex.body };
-                } catch(e) {
-                    return { header: [], body: [] };
-                }
+                    if (ex && ex.body && ex.body.length > 0) {
+                        return { header: ex.header, body: ex.body, metodo: 'buttons' };
+                    }
+                } catch(e) { /* buttons plugin no disponible */ }
+
+                // Método 2: rows().data() directamente (fallback)
+                try {
+                    const rows = table.rows({ page: 'all' }).data().toArray();
+                    if (rows && rows.length > 0) {
+                        const body = rows.map(r => {
+                            if (Array.isArray(r)) return r.map(v => v == null ? '' : String(v));
+                            if (typeof r === 'object') return Object.values(r).map(v => v == null ? '' : String(v));
+                            return [String(r)];
+                        });
+                        return { header: [], body: body, metodo: 'rows' };
+                    }
+                } catch(e2) { /* rows() tampoco disponible */ }
+
+                return { header: [], body: [], metodo: 'empty' };
             }
         """)
         if not data or not isinstance(data, dict) or not data.get("body"):
             return []
         body = data["body"]
+        metodo = data.get("metodo", "?")
         if not isinstance(body, list):
             return []
+        if body:
+            print(f"  [DATATABLE] {len(body)} filas extraídas (método: {metodo})")
         return body
     except Exception as e:
         print(f"  [DATATABLE] Error: {e}")
         return []
-
-
-def descargar_csv(popup) -> bytes:
-    """Extrae datos de la DataTable y los convierte a CSV en memoria."""
-    print("  [CSV] Extrayendo datos de DataTable...")
-    try:
-        filas = _extraer_datatable(popup) or []
-    except Exception as e:
-        print(f"  [CSV] ⚠ Error extrayendo DataTable: {e}")
-        return b""
-    if not isinstance(filas, list) or not filas:
-        print("  [CSV] ⚠ Sin datos en la tabla.")
-        return b""
-
-    # Filtrar filas inválidas (DataTable vacía puede devolver [0])
-    filas = [f for f in filas if isinstance(f, list)]
-
-    if not filas:
-        print("  [CSV] ⚠ Sin datos en la tabla.")
-        return b""
-
-    # DataTable column layout (52 cols):
-    # 0=Fecha, 1=Tipo, 2=Número(PtoVta-NroDesde),
-    # 3=PtoVta, 4=NroDesde, 5=NroHasta,
-    # 6=CodAut, 7=TipoCodAut, 8=CAE,
-    # 9-12=Emisor info, 13-15=Receptor info,
-    # 16=TipoCambio, 17=Moneda,
-    # 18-39=IVA detalle (pares raw/fmt),
-    # 40=NetoGravTotal_raw, 42=NetoNoGrav_raw,
-    # 44=Exentas_raw, 46=OtrosTrib_raw,
-    # 48=TotalIVA_raw, 50=ImpTotal_raw
-    #
-    # Los valores raw ya son números limpios (e.g. "1824885.52"),
-    # solo hay que reemplazar vacío/guion por "0"
-
-    lineas = [";".join([""] * 30)]  # dummy header (el parser saltea línea 0)
-    for f in filas:
-        def nv(i):
-            v = f[i] if len(f) > i else ""
-            return "0" if not v or v == "-" else v
-
-        cols_30 = [""] * 30
-        cols_30[0]  = f[0] if len(f) > 0 else ""                        # Fecha
-        cols_30[1]  = f[1].split(" - ")[0] if len(f) > 1 and " - " in f[1] else (f[1] if len(f) > 1 else "")  # Tipo
-        cols_30[2]  = f[3] if len(f) > 3 else ""                        # PtoVta
-        cols_30[3]  = f[4] if len(f) > 4 else ""                        # NroDesde
-        cols_30[4]  = f[5] if len(f) > 5 else ""                        # NroHasta
-        cols_30[5]  = f[8] if len(f) > 8 else ""                        # CAE
-        cols_30[6]  = f[10] if len(f) > 10 else ""                      # TipoDocEmisor
-        cols_30[7]  = f[11] if len(f) > 11 else ""                      # NroDocEmisor (CUIT)
-        cols_30[8]  = f[12].strip('"') if len(f) > 12 else ""           # DenomEmisor
-        cols_30[9]  = f[14] if len(f) > 14 else ""                      # TipoDocReceptor
-        cols_30[10] = f[15] if len(f) > 15 else ""                      # NroDocReceptor
-        cols_30[11] = f[16] if len(f) > 16 else "1"                     # TipoCambio
-        cols_30[12] = f[17] if len(f) > 17 else "PES"                   # Moneda
-        cols_30[24] = nv(40)                                             # NetoTotal
-        cols_30[25] = nv(42)                                             # NetoNoGrav
-        cols_30[26] = nv(44)                                             # Exentas
-        cols_30[27] = nv(46)                                             # OtrosTrib
-        cols_30[28] = nv(48)                                             # TotalIVA
-        cols_30[29] = nv(50)                                             # ImpTotal
-
-        lineas.append(";".join(cols_30))
-
-    csv_text = "\n".join(lineas)
-    print(f"  [CSV] ✓ {len(filas)} filas extraídas ({len(csv_text)} bytes).")
-
-    # Retornar CSV crudo (sin ZIP) igual que la original descargar_csv
-    return csv_text.encode("utf-8")
-
-
-def guardar_zip_arca(csv_bytes: bytes, empresa: str, tipo: str,
-                     periodo: str, output_dir: str = "descargas_arca") -> str:
-    """
-    Guarda el CSV empaquetado en ZIP con la estructura de carpetas y naming
-    que requiere el usuario:
-      {output_dir}/{empresa}/{tipo}/{empresa}_{periodo}_AAAAMMDD.zip
-
-    Retorna la ruta del ZIP guardado.
-    """
-    from datetime import date
-    ts = date.today().strftime("%Y%m%d")
-    safe_name = empresa.replace("/", "_").replace("\\", "_").strip()
-    folder = os.path.join(output_dir, safe_name, tipo)
-    os.makedirs(folder, exist_ok=True)
-
-    filename = f"{safe_name}_{periodo}_{ts}.zip"
-    path = os.path.join(folder, filename)
-
-    import zipfile, io
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("comprobantes.csv", csv_bytes.decode("utf-8", errors="replace"))
-
-    with open(path, "wb") as f:
-        f.write(buf.getvalue())
-
-    print(f"  [ARCHIVO] ✓ ZIP guardado: {path} ({buf.tell()} bytes)")
-    return path
 
 
 # ─── Parsing CSV (#1) ─────────────────────────────────────────────────────────
@@ -486,20 +443,28 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
                 total       = _parse_float(cols[29])
                 cuit_emisor = cuit  # siempre nuestro CUIT como clave primaria
             else:
-                if len(cols) < 28:
+                # Emitidos: mismo formato 30 cols generado por descargar_csv
+                # col[7] = NroDocEmisor (nuestro CUIT, ignorar)
+                # col[8] = DenomEmisor (nuestro nombre, ignorar)
+                # col[9] = DenomReceptor (nombre del cliente)
+                # col[10] = TipoDocReceptor
+                # col[13] = NroDocReceptor (CUIT del cliente)
+                # col[11] = TipoCambio, col[12] = Moneda
+                # col[24] = Neto, col[28] = IVA, col[29] = Total
+                if len(cols) < 30:
                     continue
                 fecha_raw   = cols[0].strip().strip('"')
                 tipo_cod    = cols[1].strip()
                 pto_vta     = cols[2].strip().zfill(4)
                 nro         = cols[3].strip().zfill(8)
                 cae         = cols[5].strip()
-                cuit_rec    = cols[7].strip()
-                denom_rec   = cols[8].strip().strip('"')
-                tipo_cambio = _parse_float(cols[9]) or 1.0
-                moneda      = cols[10].strip() or "PES"
-                neto        = _parse_float(cols[22])
-                iva         = _parse_float(cols[26])
-                total       = _parse_float(cols[27])
+                cuit_rec    = cols[13].strip()   # NroDocReceptor (CUIT del cliente)
+                denom_rec   = cols[9].strip().strip('"')  # DenomReceptor (nombre cliente)
+                tipo_cambio = _parse_float(cols[11]) or 1.0
+                moneda      = cols[12].strip() or "PES"
+                neto        = _parse_float(cols[24])
+                iva         = _parse_float(cols[28])
+                total       = _parse_float(cols[29])
                 cuit_emisor = cuit
 
             try:
@@ -539,9 +504,74 @@ def _parsear_csv(csv_bytes: bytes, cuit: str, razon_social: str,
 
 # ─── Función principal ────────────────────────────────────────────────────────
 
+def _guardar_archivo(rows: list[list[str]], empresa: str, tipo: str,
+                     periodo: str, output_dir: str) -> str:
+    """
+    Guarda filas extraídas de la DataTable como CSV dentro de un ZIP.
+    Retorna la ruta del archivo guardado, o "" si no hay datos.
+    """
+    import csv, io
+
+    safe_name = empresa.replace("/", "_").replace("\\", "_").strip()
+    folder = os.path.join(output_dir, safe_name, tipo)
+    os.makedirs(folder, exist_ok=True)
+
+    if not rows:
+        return ""
+
+    # Escribir CSV en memoria
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    for row in rows:
+        writer.writerow(row)
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    # Guardar como ZIP
+    filename = f"{safe_name}_{tipo}_{periodo}.zip"
+    filepath = os.path.join(folder, filename)
+    with zipfile.ZipFile(filepath, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{safe_name}_{tipo}_{periodo}.csv", csv_bytes)
+
+    print(f"  [ARCHIVO] ✓ ZIP guardado: {filepath} ({os.path.getsize(filepath)} bytes)")
+    return filepath
+
+
+def _scrape_empresa_rangos(popup, cuit_rep: str, razon_social: str,
+                           tipo: str, rangos: list[tuple[str, str]],
+                           output_dir: str | None) -> list[dict]:
+    """
+    Para una empresa ya seleccionada en el popup, recorre todos los rangos
+    de fechas en la misma sesión del navegador.
+    Extrae datos de la DataTable del DOM y los guarda como CSV/ZIP.
+    """
+    url_servicio = URL_EMITIDOS if tipo == "emitidos" else URL_RECIBIDOS
+    archivos = []
+
+    for i, (desde, hasta) in enumerate(rangos):
+        print(f"\n  ── Rango {i+1}/{len(rangos)}: {desde} → {hasta} ──")
+        buscar_comprobantes(popup, url_servicio, desde, hasta)
+
+        periodo = desde[6:10] + desde[3:5]
+
+        print(f"  [CSV] Extrayendo datos de DataTable...")
+        rows = _extraer_datatable(popup)
+
+        if rows:
+            print(f"  [CSV] ✓ {len(rows)} filas extraídas.")
+            if output_dir:
+                filepath = _guardar_archivo(rows, razon_social, tipo, periodo, output_dir)
+                if filepath:
+                    archivos.append(filepath)
+        else:
+            print(f"  [CSV] ⚠ Sin datos en la tabla.")
+
+    return archivos
+
+
 @con_reintentos(max_intentos=3, demora_seg=10, no_reintentar=(LoginError,))
 def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
-                tipo: str = "emitidos", output_dir: str = None) -> list[dict]:
+                tipo: str = "emitidos", output_dir: str = None,
+                rangos: list[tuple[str, str]] | None = None) -> list[str]:
     """
     Scrapea los comprobantes de uno o más CUITs representados para el período.
 
@@ -553,16 +583,19 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
         'empresas'     — lista de dicts [{"cuit": ..., "razon_social": ...}]
                          si está presente, itera todas en una misma sesión
     tipo      : 'emitidos' | 'recibidos'
-    output_dir: si se pasa, guarda los archivos ZIP organizados en carpetas
-    Retorna   : lista de dicts listos para insertar en SQLite
+    rangos    : lista de tuplas (desde, hasta) en formato dd/mm/yyyy
+                si se pasa, itera cada rango en la misma sesión del navegador
+    output_dir: carpeta donde guardar los archivos descargados
+    Retorna   : lista de rutas de archivos descargados
     """
     cuit_login  = cuit_data["cuit"]
     password     = cuit_data["password"]
     desde        = desde or PERIODO_DESDE
     hasta        = hasta or PERIODO_HASTA
-    url_servicio = URL_EMITIDOS if tipo == "emitidos" else URL_RECIBIDOS
 
-    # Resolver lista de empresas a scrapear
+    if not rangos:
+        rangos = [(desde, hasta)]
+
     empresas = cuit_data.get("empresas")
     if not empresas:
         cuit_rep = cuit_data.get("cuit_representacion", cuit_login)
@@ -571,11 +604,12 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
 
     print(f"\n{'='*60}")
     print(f"  PROCESANDO [{tipo.upper()}] — {len(empresas)} empresa(s)")
-    print(f"  Login: {cuit_login}  |  Período: {desde} → {hasta}")
+    print(f"  Login: {cuit_login}  |  Rangos: {len(rangos)} período(s)")
+    for d, h in rangos:
+        print(f"    • {d} → {h}")
     print(f"{'='*60}")
 
-    todos_comprobantes = []
-    errores = []
+    todos_archivos = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -606,15 +640,10 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
                 else:
                     cambiar_persona_representada(popup, cuit_rep, razon_social)
 
-                buscar_comprobantes(popup, url_servicio, desde, hasta)
-                csv_bytes = descargar_csv(popup)
-                comps = _parsear_csv(csv_bytes, cuit_rep, razon_social, tipo)
-                todos_comprobantes.extend(comps)
-
-                if output_dir and csv_bytes:
-                    # desde = dd/mm/yyyy → periodo = yyyymm
-                    periodo = desde[6:10] + desde[3:5]
-                    guardar_zip_arca(csv_bytes, razon_social, tipo, periodo, output_dir)
+                archivos = _scrape_empresa_rangos(
+                    popup, cuit_rep, razon_social, tipo, rangos, output_dir
+                )
+                todos_archivos.extend(archivos)
 
         except LoginError:
             raise
@@ -628,4 +657,4 @@ def scrape_cuit(cuit_data: dict, desde: str = None, hasta: str = None,
         finally:
             browser.close()
 
-    return todos_comprobantes
+    return todos_archivos
