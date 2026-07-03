@@ -1,0 +1,180 @@
+"""
+app.py — Interfaz web para ARCA ScrapON ~By Studio BP~
+Flask + scraper en background + log en tiempo real via SSE.
+"""
+
+import os
+import sys
+import json
+import time
+import threading
+import queue
+from datetime import datetime
+
+from flask import Flask, render_template, request, jsonify, Response
+
+# Ajustar path para imports
+sys.path.insert(0, os.path.dirname(__file__))
+
+from config import CUITS, PERIODO_DESDE, PERIODO_HASTA
+from scraper import scrape_cuit, LoginError
+
+app = Flask(__name__)
+
+# Cola de logs en tiempo real
+log_queue = queue.Queue()
+scraper_running = False
+scraper_result = None
+
+
+class LogCapture:
+    """Captura stdout y lo envía a la cola de logs."""
+    def __init__(self):
+        self.original = sys.stdout
+
+    def write(self, text):
+        if text.strip():
+            log_queue.put(text)
+        self.original.write(text)
+
+    def flush(self):
+        self.original.flush()
+
+
+def _generar_meses(desde_str, hasta_str):
+    from datetime import datetime, timedelta
+    desde = datetime.strptime(desde_str, "%d/%m/%Y")
+    hasta = datetime.strptime(hasta_str, "%d/%m/%Y")
+    current = desde.replace(day=1)
+    while current <= hasta.replace(day=1):
+        if current.month == 12:
+            next_month = current.replace(year=current.year + 1, month=1)
+        else:
+            next_month = current.replace(month=current.month + 1)
+        ultimo = next_month - timedelta(days=1)
+        mes_desde = current.strftime("%d/%m/%Y")
+        mes_hasta = ultimo.strftime("%d/%m/%Y")
+        if current.year == desde.year and current.month == desde.month:
+            mes_desde = desde_str
+        if current.year == hasta.year and current.month == hasta.month:
+            mes_hasta = hasta_str
+        yield (mes_desde, mes_hasta)
+        current = next_month
+
+
+def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSeleccionados):
+    global scraper_running, scraper_result
+    scraper_running = True
+    scraper_result = None
+
+    old_stdout = sys.stdout
+    sys.stdout = LogCapture()
+
+    try:
+        cuit_data = {
+            "cuit": cuit,
+            "password": password,
+            "razon_social": empresa_nombre or cuit,
+            "empresas": [{"cuit": empresa_cuit, "razon_social": empresa_nombre}],
+        }
+
+        desde = f"01/{mesesSeleccionados[0]:02d}/2025"
+        hasta_dia = 28
+        mes_int = mesesSeleccionados[-1]
+        if mes_int in (1, 3, 5, 7, 8, 10, 12):
+            hasta_dia = 31
+        elif mes_int in (4, 6, 9, 11):
+            hasta_dia = 30
+        hasta = f"{hasta_dia}/{mesesSeleccionados[-1]:02d}/2025"
+
+        rangos = list(_generar_meses(desde, hasta))
+
+        archivos = scrape_cuit(
+            cuit_data,
+            tipo=tipo,
+            rangos=rangos,
+            output_dir="descargas_arca",
+        )
+
+        scraper_result = {"ok": True, "archivos": len(archivos), "rutas": archivos}
+    except LoginError as e:
+        scraper_result = {"ok": False, "error": f"Error de login: {e}"}
+    except Exception as e:
+        scraper_result = {"ok": False, "error": str(e)}
+    finally:
+        sys.stdout = old_stdout
+        scraper_running = False
+        log_queue.put("__DONE__")
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/start", methods=["POST"])
+def start_scraper():
+    global scraper_running
+    if scraper_running:
+        return jsonify({"error": "Ya hay un scraper corriendo"}), 409
+
+    data = request.json
+    cuit = data.get("cuit", "").strip()
+    password = data.get("password", "").strip()
+    empresa_cuit = data.get("empresa_cuit", "").strip()
+    empresa_nombre = data.get("empresa_nombre", "").strip()
+    tipo = data.get("tipo", "recibidos")
+    meses = data.get("meses", [])
+
+    if not cuit or not password:
+        return jsonify({"error": "CUIT y clave son obligatorios"}), 400
+    if not meses:
+        return jsonify({"error": "Seleccioná al menos un mes"}), 400
+
+    # Limpiar cola de logs previos
+    while not log_queue.empty():
+        try:
+            log_queue.get_nowait()
+        except queue.Empty:
+            break
+
+    t = threading.Thread(
+        target=_run_scraper,
+        args=(cuit, password, empresa_cuit, empresa_nombre, tipo, meses),
+        daemon=True,
+    )
+    t.start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/status")
+def status():
+    return jsonify({
+        "running": scraper_running,
+        "result": scraper_result,
+    })
+
+
+@app.route("/api/log")
+def log_stream():
+    def generate():
+        while True:
+            try:
+                msg = log_queue.get(timeout=30)
+                if msg == "__DONE__":
+                    yield f"data: {json.dumps({'done': True, 'result': scraper_result})}\n\n"
+                    break
+                yield f"data: {json.dumps({'text': msg})}\n\n"
+            except queue.Empty:
+                yield f"data: {json.dumps({'ping': True})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("  ARCA ScrapON ~By Studio BP~")
+    print("  Abrí http://localhost:5000 en tu navegador")
+    print("=" * 50)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

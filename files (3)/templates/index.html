@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARCA ScrapON ~By Studio BP~</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f1117;
+            color: #e1e4e8;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header {
+            width: 100%;
+            background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+            border-bottom: 1px solid #21262d;
+            padding: 24px 0;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #58a6ff, #bc8cff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 1px;
+        }
+
+        .header .sub {
+            font-size: 13px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 640px;
+            padding: 32px 20px;
+        }
+
+        .card {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #8b949e;
+            margin-bottom: 16px;
+        }
+
+        .tooltip {
+            font-size: 12px;
+            color: #8b949e;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+
+        .tooltip strong { color: #58a6ff; }
+
+        /* Months grid */
+        .months-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .month-btn {
+            position: relative;
+        }
+
+        .month-btn input { display: none; }
+
+        .month-btn label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 42px;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            color: #8b949e;
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+
+        .month-btn input:checked + label {
+            background: #1f6feb22;
+            border-color: #1f6feb;
+            color: #58a6ff;
+        }
+
+        .month-btn label:hover {
+            border-color: #30363d;
+            color: #c9d1d9;
+        }
+
+        .select-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .select-actions button {
+            background: none;
+            border: none;
+            color: #58a6ff;
+            font-size: 12px;
+            cursor: pointer;
+            padding: 2px 0;
+        }
+
+        .select-actions button:hover { text-decoration: underline; }
+
+        /* Form fields */
+        .field { margin-bottom: 16px; }
+
+        .field label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: #c9d1d9;
+            margin-bottom: 6px;
+        }
+
+        .field input[type="text"],
+        .field input[type="password"],
+        .field select {
+            width: 100%;
+            height: 42px;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 0 14px;
+            color: #e1e4e8;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .field input:focus, .field select:focus {
+            border-color: #1f6feb;
+        }
+
+        .field select { cursor: pointer; }
+        .field select option { background: #161b22; }
+
+        /* Radio buttons */
+        .radio-group {
+            display: flex;
+            gap: 12px;
+        }
+
+        .radio-option {
+            flex: 1;
+            position: relative;
+        }
+
+        .radio-option input { display: none; }
+
+        .radio-option label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 42px;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            color: #8b949e;
+            transition: all 0.15s ease;
+        }
+
+        .radio-option input:checked + label {
+            background: #1f6feb22;
+            border-color: #1f6feb;
+            color: #58a6ff;
+        }
+
+        .radio-option label:hover {
+            border-color: #30363d;
+            color: #c9d1d9;
+        }
+
+        /* Start button */
+        .btn-start {
+            width: 100%;
+            height: 48px;
+            background: linear-gradient(135deg, #238636, #2ea043);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-start:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .btn-start:active { transform: translateY(0); }
+
+        .btn-start:disabled {
+            background: #21262d;
+            color: #484f58;
+            cursor: not-allowed;
+            transform: none;
+            filter: none;
+        }
+
+        /* Log */
+        .log-box {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            height: 220px;
+            overflow-y: auto;
+            font-family: 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 12px 14px;
+            color: #8b949e;
+        }
+
+        .log-box::-webkit-scrollbar { width: 6px; }
+        .log-box::-webkit-scrollbar-track { background: transparent; }
+        .log-box::-webkit-scrollbar-thumb { background: #21262d; border-radius: 3px; }
+
+        .log-line { white-space: pre-wrap; word-break: break-all; }
+        .log-line.success { color: #3fb950; }
+        .log-line.error { color: #f85149; }
+        .log-line.info { color: #58a6ff; }
+
+        /* Result banner */
+        .result-banner {
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            display: none;
+        }
+
+        .result-banner.ok {
+            background: #23863622;
+            border: 1px solid #238636;
+            color: #3fb950;
+        }
+
+        .result-banner.fail {
+            background: #f8514922;
+            border: 1px solid #f85149;
+            color: #f85149;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff44;
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+            color: #484f58;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ARCA ScrapON</h1>
+        <div class="sub">~By Studio BP~</div>
+    </div>
+
+    <div class="container">
+        <div id="resultBanner" class="result-banner"></div>
+
+        <!-- Credenciales -->
+        <div class="card">
+            <div class="card-title">Credenciales</div>
+            <div class="tooltip">
+                Ingresá el <strong>CUIT</strong> y la <strong>clave fiscal</strong> con la que querés acceder a ARCA.
+            </div>
+            <div class="field">
+                <label>CUIT (sin guiones)</label>
+                <input type="text" id="cuit" placeholder="Ej: 23348079719" maxlength="11">
+            </div>
+            <div class="field">
+                <label>Clave fiscal</label>
+                <input type="password" id="password" placeholder="Tu clave de ARCA">
+            </div>
+        </div>
+
+        <!-- Empresa -->
+        <div class="card">
+            <div class="card-title">Empresa</div>
+            <div class="tooltip">
+                Si sos <strong>representante</strong> (contador), seleccioná la empresa a la que representás.
+                Si entrás con tu propio CUIT, dejá "Mi empresa".
+            </div>
+            <div class="field">
+                <label>Tipo de acceso</label>
+                <select id="acceso" onchange="toggleEmpresa()">
+                    <option value="mi">Mi empresa (entro con mi CUIT)</option>
+                    <option value="representante">Representante (entro como contador)</option>
+                </select>
+            </div>
+            <div id="empresaFields" style="display:none;">
+                <div class="field">
+                    <label>CUIT de la empresa representada</label>
+                    <input type="text" id="empresaCuit" placeholder="Ej: 30716583445" maxlength="11">
+                </div>
+                <div class="field">
+                    <label>Nombre / Razón Social</label>
+                    <input type="text" id="empresaNombre" placeholder="Ej: Wolf Travel S.A.">
+                </div>
+            </div>
+        </div>
+
+        <!-- Tipo de comprobante -->
+        <div class="card">
+            <div class="card-title">Tipo de comprobante</div>
+            <div class="radio-group">
+                <div class="radio-option">
+                    <input type="radio" name="tipo" id="tipoRecibidos" value="recibidos" checked>
+                    <label for="tipoRecibidos">Recibidos</label>
+                </div>
+                <div class="radio-option">
+                    <input type="radio" name="tipo" id="tipoEmitidos" value="emitidos">
+                    <label for="tipoEmitidos">Emitidos</label>
+                </div>
+                <div class="radio-option">
+                    <input type="radio" name="tipo" id="tipoAmbos" value="ambos">
+                    <label for="tipoAmbos">Ambos</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Meses -->
+        <div class="card">
+            <div class="card-title">Período</div>
+            <div class="tooltip">
+                Seleccioná los meses a scrapear. El scraper recorrerá cada mes
+                <strong>en una sola sesión</strong> (un solo login).
+            </div>
+            <div class="select-actions">
+                <button onclick="selectMonths('all')">Seleccionar todos</button>
+                <button onclick="selectMonths('none')">Limpiar</button>
+                <button onclick="selectMonths('q1')">Q1</button>
+                <button onclick="selectMonths('q2')">Q2</button>
+                <button onclick="selectMonths('q3')">Q3</button>
+                <button onclick="selectMonths('q4')">Q4</button>
+            </div>
+            <div class="months-grid" id="monthsGrid"></div>
+        </div>
+
+        <!-- Acción -->
+        <div class="card" style="padding: 16px 24px;">
+            <button class="btn-start" id="btnStart" onclick="startScrape()">
+                Descargar comprobantes
+            </button>
+        </div>
+
+        <!-- Log -->
+        <div class="card">
+            <div class="card-title">Log</div>
+            <div class="log-box" id="logBox">
+                <div class="log-line info">Esperando instrucciones...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">ARCA ScrapON ~By Studio BP~</div>
+
+    <script>
+        const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+        const grid = document.getElementById('monthsGrid');
+
+        // Render month checkboxes
+        MESES.forEach((m, i) => {
+            const div = document.createElement('div');
+            div.className = 'month-btn';
+            div.innerHTML = `<input type="checkbox" id="mes${i+1}" value="${i+1}"><label for="mes${i+1}">${m}</label>`;
+            grid.appendChild(div);
+        });
+
+        function selectMonths(action) {
+            const checks = grid.querySelectorAll('input[type="checkbox"]');
+            if (action === 'all') checks.forEach(c => c.checked = true);
+            else if (action === 'none') checks.forEach(c => c.checked = false);
+            else if (action === 'q1') { [0,1,2].forEach(i => checks[i].checked = true); }
+            else if (action === 'q2') { [3,4,5].forEach(i => checks[i].checked = true); }
+            else if (action === 'q3') { [6,7,8].forEach(i => checks[i].checked = true); }
+            else if (action === 'q4') { [9,10,11].forEach(i => checks[i].checked = true); }
+        }
+
+        function toggleEmpresa() {
+            const v = document.getElementById('acceso').value;
+            document.getElementById('empresaFields').style.display = v === 'representante' ? 'block' : 'none';
+        }
+
+        function addLog(text, cls = '') {
+            const box = document.getElementById('logBox');
+            const div = document.createElement('div');
+            div.className = 'log-line ' + cls;
+            div.textContent = text;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('logBox').innerHTML = '';
+        }
+
+        async function startScrape() {
+            const cuit = document.getElementById('cuit').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const acceso = document.getElementById('acceso').value;
+            const empresaCuit = document.getElementById('empresaCuit').value.trim();
+            const empresaNombre = document.getElementById('empresaNombre').value.trim();
+            const tipo = document.querySelector('input[name="tipo"]:checked').value;
+
+            const meses = [];
+            grid.querySelectorAll('input:checked').forEach(c => meses.push(parseInt(c.value)));
+
+            if (!cuit || !password) {
+                addLog('Error: CUIT y clave son obligatorios', 'error');
+                return;
+            }
+            if (!meses.length) {
+                addLog('Error: Seleccioná al menos un mes', 'error');
+                return;
+            }
+
+            let cuitEmpresa = cuit;
+            let nombreEmpresa = '';
+            if (acceso === 'representante') {
+                if (!empresaCuit) {
+                    addLog('Error: Ingresá el CUIT de la empresa representada', 'error');
+                    return;
+                }
+                cuitEmpresa = empresaCuit;
+                nombreEmpresa = empresaNombre;
+            }
+
+            // UI
+            const btn = document.getElementById('btnStart');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Descargando...';
+            clearLog();
+            document.getElementById('resultBanner').style.display = 'none';
+
+            addLog(`Iniciando descarga — ${tipo} — ${meses.length} mes(es)`, 'info');
+
+            try {
+                const resp = await fetch('/api/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        cuit, password,
+                        empresa_cuit: cuitEmpresa,
+                        empresa_nombre: nombreEmpresa,
+                        tipo, meses
+                    })
+                });
+
+                const data = await resp.json();
+                if (!resp.ok) {
+                    addLog(data.error || 'Error al iniciar', 'error');
+                    btn.disabled = false;
+                    btn.textContent = 'Descargar comprobantes';
+                    return;
+                }
+
+                // SSE log
+                const sse = new EventSource('/api/log');
+                sse.onmessage = (e) => {
+                    const d = JSON.parse(e.data);
+                    if (d.text) {
+                        const line = d.text.trim();
+                        if (line.includes('✓') || line.includes('OK')) addLog(line, 'success');
+                        else if (line.includes('✗') || line.includes('Error') || line.includes('error')) addLog(line, 'error');
+                        else addLog(line);
+                    }
+                    if (d.done) {
+                        sse.close();
+                        btn.disabled = false;
+                        btn.textContent = 'Descargar comprobantes';
+                        const banner = document.getElementById('resultBanner');
+                        if (d.result && d.result.ok) {
+                            banner.className = 'result-banner ok';
+                            banner.textContent = `Descarga completa — ${d.result.archivos} archivo(s) guardado(s)`;
+                        } else {
+                            banner.className = 'result-banner fail';
+                            banner.textContent = `Error: ${d.result ? d.result.error : 'Desconocido'}`;
+                        }
+                        banner.style.display = 'block';
+                    }
+                };
+                sse.onerror = () => {
+                    sse.close();
+                    btn.disabled = false;
+                    btn.textContent = 'Descargar comprobantes';
+                };
+            } catch (err) {
+                addLog('Error de conexión: ' + err.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Descargar comprobantes';
+            }
+        }
+    </script>
+</body>
+</html>
