@@ -337,37 +337,47 @@ def buscar_comprobantes(popup, url_servicio: str, desde: str, hasta: str) -> boo
 def _extraer_datatable(popup) -> list[list[str]]:
     """Extrae las filas completas de la DataTable vía su API JavaScript.
 
-    Intenta primero con buttons.exportData (incluye filas de todas las páginas).
-    Si el plugin Buttons no está disponible, usa rows().data() directamente.
+    Primero fuerza page length a -1 (todas las filas), luego extrae.
     """
     try:
+        # Forzar que la DataTable muestre TODAS las filas en una sola página
+        popup.evaluate("""
+            () => {
+                try {
+                    const table = $('#tablaDataTables').DataTable();
+                    if (table) table.page.len(-1).draw();
+                } catch(e) {}
+            }
+        """)
+        popup.wait_for_timeout(3000)
+
         data = popup.evaluate("""
             () => {
                 const table = $('#tablaDataTables').DataTable();
                 if (!table) return null;
 
-                // Método 1: buttons.exportData (más completo, incluye toda la paginación)
+                // Método 1: rows().data() — todas las filas
                 try {
-                    const ex = table.buttons.exportData({ modifier: { page: 'all' } });
-                    if (ex && ex.body && ex.body.length > 0) {
-                        return { header: ex.header, body: ex.body, metodo: 'buttons' };
-                    }
-                } catch(e) { /* buttons plugin no disponible */ }
-
-                // Método 2: rows().data() directamente (fallback)
-                try {
-                    const rows = table.rows({ page: 'all' }).data().toArray();
+                    const rows = table.rows({ search: 'applied' }).data().toArray();
                     if (rows && rows.length > 0) {
                         const body = rows.map(r => {
                             if (Array.isArray(r)) return r.map(v => v == null ? '' : String(v));
                             if (typeof r === 'object') return Object.values(r).map(v => v == null ? '' : String(v));
                             return [String(r)];
                         });
-                        return { header: [], body: body, metodo: 'rows' };
+                        return { body: body, metodo: 'rows' };
                     }
-                } catch(e2) { /* rows() tampoco disponible */ }
+                } catch(e) {}
 
-                return { header: [], body: [], metodo: 'empty' };
+                // Método 2: buttons.exportData (fallback)
+                try {
+                    const ex = table.buttons.exportData({ modifier: { page: 'all' } });
+                    if (ex && ex.body && ex.body.length > 0) {
+                        return { body: ex.body, metodo: 'buttons' };
+                    }
+                } catch(e) {}
+
+                return { body: [], metodo: 'empty' };
             }
         """)
         if not data or not isinstance(data, dict) or not data.get("body"):

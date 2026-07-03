@@ -92,12 +92,12 @@ def _run_scraper(cuit, password, empresa_cuit, empresa_nombre, tipo, mesesSelecc
 
         capture = ThreadSafeLogCapture()
         with contextlib.redirect_stdout(capture):
-            archivos = scrape_cuit(
-                cuit_data,
-                tipo=tipo,
-                rangos=rangos,
-                output_dir="descargas_arca",
-            )
+        archivos = scrape_cuit(
+            cuit_data,
+            tipo=tipo,
+            rangos=rangos,
+            output_dir="/home/pc_wolf_05/descargas_arca",
+        )
         capture.flush()
 
         scraper_result = {"ok": True, "archivos": len(archivos), "rutas": archivos}
